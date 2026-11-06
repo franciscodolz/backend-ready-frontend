@@ -28,3 +28,7 @@ use the editor.
   own key and store it in Secrets.
 - **Secrets.** Lovable manages them. Do not put secret values in the repo.
 <!-- LOVABLE:END -->
+
+## Project rules
+- All backend calls go through `src/lib/api.ts`, targeting the user's external FastAPI backend via `VITE_API_URL`; when unset, `src/lib/mock.ts` simulates the API in memory so the preview works.
+- Auth is a JWT from `/auth/login` stored in localStorage and sent as Bearer; pages needing a user wrap content in `RequireUser`.
