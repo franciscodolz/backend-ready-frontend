@@ -1,7 +1,7 @@
 // @ts-nocheck -- backend simulado, sin tipado estricto
 // Backend simulado en memoria que respeta las reglas de las historias de usuario.
 // Sólo se usa cuando VITE_API_URL no está configurado.
-import type { Comentario, Ingrediente, Plan, Receta, RecetaIngrediente, Paso, Usuario } from "./api";
+import type { CategoriaHeladera, Comentario, CompraHeladera, Heladera, Ingrediente, Plan, Receta, RecetaIngrediente, Paso, ProductoHeladera, RecordatorioHeladera, ReciboPreview, SugerenciaHeladera, Tutorial, Usuario } from "./api";
 
 type RecetaDB = Omit<Receta, "es_vegana" | "ingredientes" | "pasos"> & { ingredientes: RecetaIngrediente[]; pasos: Paso[] };
 
@@ -36,14 +36,25 @@ const db = {
       ingredientes: [{ ingrediente_id: 4, cantidad: 6 }, { ingrediente_id: 3, cantidad: 1 }, { ingrediente_id: 5, cantidad: 20 }],
       pasos: [{ orden: 1, descripcion: "Picar cebolla y tomates." }, { orden: 2, descripcion: "Cocinar a fuego lento 25 min." }] },
   ] as RecetaDB[],
+  tutoriales: [
+    { id: 1, titulo: "Técnica para cortar verduras", descripcion: "Mirá una demostración de corte y preparación.", video_url: "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4", miniatura_url: null, categoria: "cortes", duracion_seg: 5, receta_id: 1, fecha_publicacion: "2026-04-20T12:00:00" },
+    { id: 2, titulo: "Preparaciones básicas", descripcion: "Una guía visual para inspirarte en la cocina.", video_url: "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4", miniatura_url: null, categoria: "basicos", duracion_seg: 5, receta_id: null, fecha_publicacion: "2026-04-21T12:00:00" },
+  ] as Tutorial[],
   guardadas: [{ usuario_id: 2, receta_id: 1, fecha: "2026-05-01" }, { usuario_id: 1, receta_id: 2, fecha: "2026-05-02" }, { usuario_id: 2, receta_id: 3, fecha: "2026-05-03" }],
   comentarios: [{ id: 1, usuario_id: 2, receta_id: 1, texto: "¡Riquísimo!", puntaje: 5, fecha: "2026-05-01" }, { id: 2, usuario_id: 1, receta_id: 2, texto: "Muy rendidor.", puntaje: 4, fecha: "2026-05-04" }] as Comentario[],
   planes: [] as Plan[],
+  comprasHeladera: [] as { usuario_id: number; compra: CompraHeladera }[],
+  recordatoriosHeladera: [] as { usuario_id: number; recordatorio: RecordatorioHeladera }[],
   seq: 100,
 };
 
 const err = (status: number, msg: string) => Object.assign(new Error(msg), { status });
 const today = () => new Date().toISOString().slice(0, 10);
+const addDays = (days: number) => {
+  const value = new Date();
+  value.setDate(value.getDate() + days);
+  return value.toISOString().slice(0, 10);
+};
 const ing = (id: number) => db.ingredientes.find((i) => i.id === id)!;
 const round = (n: number) => Math.round(n * 100) / 100;
 
@@ -100,6 +111,129 @@ export async function mockRequest<T>(method: string, fullPath: string, body: any
     case "GET /ingredientes/mas-usados":
       return out(db.ingredientes.map((i) => ({ ...i, cantidad_recetas: db.recetas.filter((r) => r.ingredientes.some((x) => x.ingrediente_id === i.id)).length }))
         .filter((i) => i.cantidad_recetas > 0).sort((a, b) => b.cantidad_recetas - a.cantidad_recetas).slice(0, 10));
+    case "POST /heladera/recibos/preview": {
+      need(uid);
+      return out({
+        comercio: "Supermercado Demo",
+        fecha_compra: today(),
+        productos: [
+          { nombre: "Arroz", ingrediente_id: 2, categoria: "almacen", cantidad: 500, unidad: "g", precio_total: 1800, fecha_vencimiento: addDays(5) },
+          { nombre: "Cebolla", ingrediente_id: 3, categoria: "verduras", cantidad: 2, unidad: "unidad", precio_total: 700, fecha_vencimiento: null },
+        ],
+      } satisfies ReciboPreview);
+    }
+    case "POST /heladera/compras": {
+      const user = need(uid);
+      const items: ProductoHeladera[] = body.productos.map((item: { ingrediente_id: number; nombre_producto: string; categoria: CategoriaHeladera; cantidad: number; precio_total: number; fecha_vencimiento: string | null }) => {
+        const ingredient = db.ingredientes.find((value) => value.id === item.ingrediente_id);
+        if (!ingredient) throw err(404, "Ingrediente no encontrado");
+        const days = item.fecha_vencimiento ? Math.ceil((new Date(`${item.fecha_vencimiento}T00:00:00`).getTime() - new Date(`${today()}T00:00:00`).getTime()) / 86400000) : null;
+        return {
+          id: ++db.seq, ingrediente_id: ingredient.id, nombre: item.nombre_producto, categoria: item.categoria,
+          cantidad: item.cantidad, unidad: ingredient.unidad_base, precio_total: item.precio_total,
+          fecha_vencimiento: item.fecha_vencimiento, dias_para_vencer: days,
+          proximo_a_vencer: days !== null && days >= 0 && days <= 7,
+          vencido: days !== null && days < 0,
+        };
+      });
+      const purchase = {
+        id: ++db.seq, comercio: body.comercio, fecha_compra: body.fecha_compra,
+        total: items.reduce((sum, item) => sum + item.precio_total, 0), productos: items,
+      };
+      db.comprasHeladera.unshift({ usuario_id: user, compra: purchase });
+      const acquiredNames = new Set(items.flatMap((item) => [
+        item.nombre.trim().toLocaleLowerCase(),
+        ing(item.ingrediente_id).nombre.trim().toLocaleLowerCase(),
+      ]));
+      for (let index = db.recordatoriosHeladera.length - 1; index >= 0; index--) {
+        const entry = db.recordatoriosHeladera[index];
+        if (entry.usuario_id === user && acquiredNames.has(entry.recordatorio.nombre.trim().toLocaleLowerCase())) {
+          db.recordatoriosHeladera.splice(index, 1);
+        }
+      }
+      return out(purchase);
+    }
+    case "GET /heladera": {
+      const user = need(uid);
+      const purchases = db.comprasHeladera.filter((entry) => entry.usuario_id === user).map((entry) => entry.compra);
+      return out({
+        compras: purchases,
+        total_gastado: purchases.reduce((sum, purchase) => sum + purchase.total, 0),
+      } satisfies Heladera);
+    }
+    case "PATCH /heladera/productos/:id": {
+      const user = need(uid);
+      const entry = db.comprasHeladera.find((purchaseEntry) =>
+        purchaseEntry.usuario_id === user && purchaseEntry.compra.productos.some((item) => item.id === id));
+      const product = entry?.compra.productos.find((item) => item.id === id);
+      if (!product) throw err(404, "Producto de heladera no encontrado");
+      product.categoria = body.categoria as CategoriaHeladera;
+      return out(product);
+    }
+    case "GET /heladera/sugerencias": {
+      const user = need(uid);
+      const available = new Set(db.comprasHeladera.filter((entry) => entry.usuario_id === user).flatMap((entry) => entry.compra.productos)
+        .filter((item) => !item.vencido).map((item) => item.ingrediente_id));
+      const suggestions: SugerenciaHeladera[] = db.guardadas
+        .filter((saved) => saved.usuario_id === user)
+        .flatMap((saved) => {
+          const recipe = db.recetas.find((item) => item.id === saved.receta_id);
+          if (!recipe) return [];
+          const existing = recipe.ingredientes.filter((item) => available.has(item.ingrediente_id));
+          const missing = recipe.ingredientes.filter((item) => !available.has(item.ingrediente_id));
+          if (!existing.length || !missing.length) return [];
+          return [{
+            receta_id: recipe.id, titulo: recipe.titulo,
+            ingredientes_disponibles: existing.length, total_ingredientes: recipe.ingredientes.length,
+            productos_a_comprar: missing.map((item) => ({
+              ingrediente_id: item.ingrediente_id, nombre: ing(item.ingrediente_id).nombre,
+              cantidad: item.cantidad, unidad: ing(item.ingrediente_id).unidad_base,
+            })),
+          }];
+        });
+      return out(suggestions);
+    }
+    case "GET /heladera/recordatorios": {
+      const user = need(uid);
+      return out(db.recordatoriosHeladera.filter((entry) => entry.usuario_id === user).map((entry) => entry.recordatorio));
+    }
+    case "POST /heladera/recordatorios": {
+      const user = need(uid);
+      const current = db.recordatoriosHeladera.filter((entry) => entry.usuario_id === user);
+      const names = new Set(current.map((entry) => entry.recordatorio.nombre.toLocaleLowerCase()));
+      for (const rawName of body.productos as string[]) {
+        const name = rawName.trim();
+        const normalized = name.toLocaleLowerCase();
+        if (!name || name.length > 120) throw err(422, "Cada producto debe tener entre 1 y 120 caracteres");
+        if (names.has(normalized)) continue;
+        names.add(normalized);
+        db.recordatoriosHeladera.push({ usuario_id: user, recordatorio: { id: ++db.seq, nombre: name } });
+      }
+      return out(db.recordatoriosHeladera.filter((entry) => entry.usuario_id === user).map((entry) => entry.recordatorio));
+    }
+    case "DELETE /heladera/recordatorios/:id": {
+      const user = need(uid);
+      const index = db.recordatoriosHeladera.findIndex((entry) => entry.usuario_id === user && entry.recordatorio.id === id);
+      if (index < 0) throw err(404, "Producto recordatorio no encontrado");
+      db.recordatoriosHeladera.splice(index, 1);
+      return out(null);
+    }
+    case "GET /tutoriales": {
+      let tutorials = [...db.tutoriales];
+      const categoria = q.get("categoria"); if (categoria) tutorials = tutorials.filter((t) => t.categoria === categoria);
+      const text = q.get("q")?.toLocaleLowerCase(); if (text) tutorials = tutorials.filter((t) => t.titulo.toLocaleLowerCase().includes(text));
+      tutorials.sort((a, b) => a.orden - b.orden || a.id - b.id);
+      return out(tutorials);
+    }
+    case "GET /tutoriales/:id": {
+      const tutorial = db.tutoriales.find((item) => item.id === id);
+      if (!tutorial) throw err(404, "Tutorial no encontrado");
+      return out(tutorial);
+    }
+    case "GET /recetas/:id/tutoriales": {
+      if (!db.recetas.some((recipe) => recipe.id === id)) throw err(404, "Receta no encontrada");
+      return out(db.tutoriales.filter((tutorial) => tutorial.receta_id === id).sort((a, b) => a.orden - b.orden || a.id - b.id));
+    }
     case "GET /recetas": {
       let rs = db.recetas.map((r) => expand(r));
       const t = q.get("q")?.toLowerCase(); if (t) rs = rs.filter((r) => r.titulo.toLowerCase().includes(t));
